@@ -1,0 +1,513 @@
+---
+title: "Faulkner's Mules:"
+subtitle: "Some views of interests"
+author: "Johannes Burgers"
+date: "7/20/2022"
+output: html_document
+knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = file.path(dirname(inputFile), 'index.html')) })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning=FALSE, error=FALSE)
+```
+
+```{r}
+library(tidyverse, quietly=TRUE)
+library(ggthemes)
+library(rmdformats)
+library(cooccur)
+library(plotly)
+library(wordcloud)
+library(RColorBrewer)
+library(wordcloud2)
+```
+
+
+```{r preprocessing}
+characters <- read_csv("data/characters.csv")
+locations <- read_csv("data/locations.csv")
+events <- read_csv("data/events.csv")
+```
+
+```{r clean_character}
+
+characters_clean <- characters %>% 
+                   select(SourceTextTitle:Family,Biography,Nid:IndividualGroup
+                    ) %>% 
+                   rename(CharacterID = Nid)
+```
+
+```{r clean_locations}
+locations_clean <- locations %>% 
+                   select(SourceTextTitle:Description,`True X`:Region) %>% 
+                   rename_with(~gsub(" ", "_", .x, fixed = TRUE)) %>% 
+                   mutate(across(contains('_'),~as.numeric(gsub(" ", "", .)))) %>% 
+                   mutate(True_X = coalesce(True_X, Cemetery_X)) %>% 
+                   mutate(True_Y = coalesce(True_Y, Cemetery_Y)) %>% 
+                   select(!(Cemetery_X:Cemetery_Y)) %>% 
+                   rename(LocationCode = LocationKey)
+```
+
+
+```{r events_clean}
+
+events_clean <- events %>% 
+                select(!c(Body:y,Keywords)) %>% 
+                pivot_longer(c(CharactersPresent, CharactersMentioned), names_to = "PresentMentioned", values_to = "CharacterID") %>%                    
+  separate_rows(CharacterID, sep = ",") %>% 
+  mutate(CharacterID = as.numeric(str_trim(CharacterID))) %>% 
+  mutate(PresentMentioned = str_remove_all(PresentMentioned, "Characters")) %>% 
+  drop_na(CharacterID)
+  
+```
+
+```{r full_database}
+
+database_full <- events_clean %>% 
+                 left_join(characters_clean) %>% 
+                 left_join(locations_clean)  
+
+```
+
+
+
+
+## Introduction
+
+The following is a series of charts and visualizations that were inspired by discussions for the NEH grant *Teaching and Learning William Faulkner in the Digital Age*. These conversations revolved around using the *Digital Yoknapatawpha* site to help enrich student understanding of Faulkner at all levels through various technological interventions. The visualizations are not currently available on the official *DY* site, but have been created using the *DY* data.
+
+## One is the loneliest number
+
+One way to think about character representation in Faulkner's work is the number of occasions they appear alone. In essence, this is a character's "screen time," if the text were a movie. While the event data can provide frequency of times alone in a scene, it cannot shed light on duration. For example, a character who is alone two times throughout a novel in a very short sequence, is technically alone more than a character who is alone only once for two pages. These numbers can therefore be distorting at low-frequencies. Nevertheless, where the major characters are concerned these patterns tend to be somewhat more reliable.
+
+```{r lone_character}
+
+corpus_alone <- database_full %>% 
+                filter(PresentMentioned == "Present") %>%
+                filter(IndividualGroup == "Individual") %>% 
+                  group_by(Nid) %>% 
+                  add_count(Nid) %>% 
+                  filter(n == 1)
+
+corpus_alone_by_text <- database_full %>% 
+                filter(PresentMentioned == "Present") %>%
+                filter(IndividualGroup == "Individual") %>% 
+                  group_by(SourceTextCode) %>% 
+                  mutate(event_count = n_distinct(Nid)) %>% 
+                  add_count(Nid) %>% 
+                  filter(n == 1) %>% 
+                  mutate(percent = sum(n)/event_count) %>% 
+                  distinct(SourceTextTitle, percent)
+
+corpus_alone_by_text_max <- corpus_alone_by_text %>% 
+                            ungroup() %>% 
+                            slice_max(percent, n=1)
+corpus_alone_by_text_min <- corpus_alone_by_text %>% 
+                            ungroup() %>% 
+                            slice_min(percent, n=1)
+                                    
+                  
+
+corpus_alone_percent <- round(nrow(corpus_alone)/nrow(events)*100,0)
+                
+
+```
+
+```{r novel_lonely_percent}
+
+novel_lonely_percent <- corpus_alone_by_text %>% 
+                        filter(!str_detect(SourceTextTitle, '\\"')) %>% 
+                        mutate(marked = ifelse(str_detect(SourceTextTitle,"Sound|Dying"),TRUE,FALSE))
+
+mean_lonely <- mean(novel_lonely_percent$percent)
+
+```
+
+
+If we look at the entire corpus then characters are alone in an event around `r corpus_alone_percent`% of the time. Of course, the distribution could vary greatly from text to text. The text where a character is alone the most is `r corpus_alone_by_text_max$SourceTextTitle` here the focus is on a single character `r round(corpus_alone_by_text_max$percent*100,0)`% of the time. On the opposite end of the spectrum is the story `r corpus_alone_by_text_min$SourceTextTitle`, here we only see a character alone in`r round(corpus_alone_by_text_min$percent*100,0)`% of events. If we look across the novels, we'll note that *As I Lay Dying* and *The Sound and the Fury* are below the average of portraying characters by themselves (`r round(mean_lonely*100,0)`%).
+
+```{r}
+novel_lonely_percent %>% 
+  ggplot(aes( x=reorder(SourceTextTitle,percent), y=percent, fill=marked))+
+  geom_bar(stat = "identity")+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))+
+  theme_clean()+
+  coord_flip()+
+   theme(legend.position="none")+
+  scale_fill_brewer(palette="Dark1")+
+    labs(title="Percentage of Events where Character Appears Alone by Novel", 
+         x="Novel", y = "Percent")
+```
+This global overview gives a good snapshot of variety of characterization Faulkner uses throughout his career. In some works he is more inclined to build characters in isolation, while in others it is by portraying their relationships to other characters. Of course, how these character potrayals are distributed within the text flattened out by the above chart, and drilling down into the text can produce some productive insights.
+
+
+### *The Sound and the Fury*
+
+
+```{r compson_single}
+
+compson_single <- database_full %>% 
+                  filter(SourceTextCode == "SF") %>% 
+                  filter(PresentMentioned == "Present") %>% 
+                  group_by(Nid) %>% 
+                  add_count(Nid) %>% 
+                  filter(n == 1) %>% 
+                   #filter(Family == "Compson") %>% 
+                  group_by(Gender) %>%  
+                  count(CharacterName)
+
+compson_events <- database_full %>% 
+                  filter(SourceTextCode == "SF") %>% 
+                  distinct(Nid) %>% 
+                  nrow() %>% 
+                  as.numeric()
+
+single_character_sf <-  database_full %>% 
+                  filter(SourceTextCode == "SF") %>% 
+                  filter(PresentMentioned == "Present") %>% 
+                  group_by(Nid) %>% 
+                  add_count(Nid) %>% 
+                  filter(n == 1) %>% 
+                  nrow() %>% 
+                  as.numeric()
+                 
+```
+
+*The Sound and the Fury* has been broken down into `r compson_events` in `r single_character_sf` events, or `r round((single_character_sf/compson_events)*100,0)` % of the text, there is a character who is alone. This alone time is not equally distributed among the Compson family and is heavily tilted towards the three sons. The only characters, beyond Jason, Benjy, and Quentin to ever appear alone are Luster and Dilsey.
+
+
+```{r}
+compson_single %>%
+  mutate(CharacterName = str_remove_all(CharacterName," Compson")) %>% 
+  ggplot( aes(x=reorder(CharacterName,n), y=n, fill= Gender))+
+  geom_bar(stat= "identity")+
+    labs(title="Number of times Character Appears Alone", 
+         x="Character", y = "Frequency")+
+  geom_text(aes(label=n))+
+  theme_clean()
+
+```
+
+The data suggests that the women of *SF* are rarely considered in isolation, and only exist on the page in relation to other characters. Meanwhile, we can also think about which Compsons are most spoken about in their absence. Here the exact opposite is true, women are spoken about more than they are present alone on the page. The only notable exception is Mr. Jason Compson who never appears alone, but is often mentioned. This is most likely an artifact of the Quentin section where he is mentioned quite often.
+
+
+
+```{r sf_mentioned}
+
+compson_mentioned <- database_full %>% 
+                  filter(SourceTextCode == "SF") %>% 
+                  filter(PresentMentioned == "Mentioned") %>% 
+                  group_by(Gender) %>% 
+                  count(CharacterName) %>% 
+                  ungroup() %>% 
+                top_n(10)
+
+```
+
+```{r sf_mentioned_plot}
+
+compson_mentioned %>% 
+   ggplot( aes(x=reorder(CharacterName,n), y=n, fill= Gender))+
+  geom_bar(stat= "identity")+
+    labs(title="Number of Times Characters are Mentioned", 
+         x="Character", y = "Frequency")+
+  geom_text(aes(label=n))+
+  theme_clean()+
+  coord_flip()
+
+```
+
+Yet a different way to consider the how the Compsons are represented is the narrative technique attached to them. Quite famously, Jason's section does not use the same stylistic pyrotechnics as that of Benjy and Quentin. This perhaps betrays his less varnished version of his family's travails. We can count the number of times each character is represented through a different technique, such as narrated, remembered, and told. 
+
+```{r compson_narrative_status}
+
+sf_narrative_status <- database_full %>% 
+                      filter(SourceTextCode == "SF") %>% 
+                      filter(PresentMentioned == "Present") %>% 
+                  filter(Family == "Compson") %>% 
+                       group_by(CharacterName) %>% 
+                    count(NarrativeStatus) %>% 
+                    mutate(percent = round(n/sum(n)*100,0)) %>% 
+                    mutate(sum = sum(n)) %>% 
+                  ungroup() %>% 
+                    slice_max(sum, n=22)
+                      
+                    
+
+```
+
+```{r compson_narrative_status_plot}
+sf_narrative_status %>% 
+    ggplot( aes(x=reorder(CharacterName,NarrativeStatus), y=percent, fill= NarrativeStatus))+
+    geom_bar(stat= "identity", color = "black")+
+    labs(title="Percent Narrative Status per Character", 
+         x="Character", y = "Percent")+
+    coord_flip()+
+    theme_clean()
+```
+
+The narrative status gives us different look at the Compson family history. The three sons are represented through narration and memory. Meanwhile, the parents and Caddy exist largely in memory. The newest member of the Compson family Miss Quentin exists most in the narrative present, and her life is largely narrated.
+
+### *As I Lay Dying*
+
+```{r bundren_single}
+
+bundren_single <- database_full %>% 
+                  filter(SourceTextCode == "LD") %>% 
+                  filter(PresentMentioned == "Present") %>% 
+                  group_by(Nid) %>% 
+                  add_count(Nid) %>% 
+                  filter(n == 1) %>% 
+                  group_by(Gender) %>%  
+                  count(CharacterName)
+
+bundren_events <- database_full %>% 
+                  filter(SourceTextCode == "LD") %>% 
+                  distinct(Nid) %>% 
+                  nrow()
+
+single_character_aild <-  database_full %>% 
+                  filter(SourceTextCode == "LD") %>% 
+                  filter(PresentMentioned == "Present") %>% 
+                  group_by(Nid) %>% 
+                  add_count(Nid) %>% 
+                  filter(n == 1) %>% 
+                  nrow()
+                  
+
+```
+
+*As I Lay Dying* differs substantially in how it represents characters. Not only are the perspectives interwoven throughout the text, the characters themselves are constantly entangled with one another. This is a novel in which characters are rarely alone. There are `r bundren_events` events in *As I Lay Dying*, of these only `r single_character_aild` events feature a character in isolation. This is `r round((single_character_aild/bundren_events)*100,0)`% of the novel, and noticeably less than *The SOund and the Fury*. This is also reflected in how often individual characters are alone.
+
+```{r bundren_single_plot}
+bundren_single %>%
+  mutate(CharacterName = str_remove_all(CharacterName," Bundren")) %>% 
+  ggplot( aes(x=reorder(CharacterName,n), y=n, fill= Gender))+
+  geom_bar(stat= "identity")+
+    labs(title="Number of Times Characters Appear Alone", 
+         x="Character", y = "Frequency")+
+  geom_text(aes(label=n))+
+  theme_clean()+
+  coord_flip()
+```
+
+Given the low frequency of characters appearing alone, it makes little sense to attach too much value to the relative differences between the characters who appear alone. More generally though, it indicates how intimately related to one another these characters are. 
+
+Due to the spatial intimacy of the characters, it might be interesting to explore which characters tend to have the strongest relationships with one another. One way to measure this is through co-occurrence. Co-occurrence analysis determines how characters or groups of characters interact as a pattern. It does so by looking at the total presence of each character with another character across the text and calculating which ones are statistically significant. This can have three results:
+
++ If there is a **positive** co-occurrence then one character appears with another at a higher than expected rate.
++ If there is a **negative** co-occurrence then one character appears with another character at a much lower than expected rate. Generally, when one character is present another is absent. 
++ Co-occurrence can also have no statistical significance. This means that there is no measurable pattern of co-occurrence either way. Of course, this does not mean that the two characters meeting or not meeting is insignificant in a literary sense.
+
+
+
+```{r co_occurrence, cache=TRUE}
+
+co_occurrence_matrix <- database_full %>% 
+  filter(SourceTextCode == "LD") %>% 
+  filter(PresentMentioned == "Present") %>%
+  filter(IndividualGroup == "Individual") %>%
+  select(Nid, CharacterName) %>% 
+    group_by(Nid) %>% 
+  count(CharacterName) %>% 
+  mutate(n = ifelse (n > 0, 1, 0)) %>% 
+  pivot_wider(names_from = Nid,
+              values_from = n,
+              values_fill = 0)  %>% 
+  column_to_rownames(var = "CharacterName")
+
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+aild_cooccur <-
+  cooccur(
+    mat = co_occurrence_matrix,
+    type = "spp_site",
+    thresh = FALSE,
+    spp_names = TRUE,
+    true_rand_classifier = 0.1,
+    prob = "comb",
+    site_mask = NULL,
+    only_effects = FALSE,
+    eff_standard = FALSE,
+    eff_matrix = FALSE
+  )
+```
+
+```{r}
+aild_cooccur_table <- prob.table(aild_cooccur)
+```
+
+```{r}
+tagged_prob_table <- aild_cooccur_table %>%
+  mutate(
+    relationship = case_when(
+      p_lt < .05 ~ "Negative",
+      p_lt > .05 & p_lt < .95 ~ "Random",
+      p_lt > .95 ~ "Positive"
+    )
+  ) %>%
+  arrange(sp1_name, sp2_name) %>%
+  mutate(intersection = ifelse(
+    sp1_name < sp2_name,
+    paste(sp1_name, sp2_name, sep = "."),
+    paste(sp2_name, sp1_name, sep = ".")
+  )) %>% 
+  filter(grepl('Bundren', sp1_name)) %>% 
+  filter(grepl('Bundren', sp2_name)) 
+
+top_table <- tagged_prob_table %>%
+  filter(relationship != "Random") %>%
+  group_by(relationship) %>%
+  top_n(obs_cooccur, n = 5) %>%
+  mutate(intersection = str_replace_all(intersection, c("_" =
+                                                          " ", "\\." = "<br>"))) %>%
+  ungroup() %>%
+  arrange(relationship, obs_cooccur)
+
+```
+
+```{r}
+top_table_plot <- plot_ly(
+  top_table,
+  x = ~ intersection,
+  y = ~ obs_cooccur,
+  type = "bar",
+  color = ~relationship, 
+  name = ~relationship,
+  opacity=.9,
+ # colors= faulkner_colorway,
+  hovertemplate=paste("Observed Co-Occurrence: %{y}<br>", "Expected Co-Occurrence:", round(top_table$exp_cooccur,0), "<extra></extra>"),
+  height = 600
+ )
+
+top_table_plot <- top_table_plot %>%
+  layout(
+    #font = plot_font,
+    title = "Positive and Negative Co-Occurrences in the Bundren Family",
+    xaxis = list(title = "Interaction", categoryorder = "trace"),
+    yaxis = list(title = "Number of Events")
+    #paper_bgcolor = faulkner_paperbackground,
+  #  plot_bgcolor = faulkner_plotcolor,
+   # modebar = list(bgcolor = faulkner_paperbackground),
+  #  margin = m
+  )
+
+top_table_plot <- top_table_plot %>% 
+            config(displayModeBar = FALSE)
+
+top_table_plot
+```
+
+Perhaps the most pronounced pattern in *As I Lay Dying* is the fact that Anse and Addie appear to have inverse relationships with Vardaman and Dewey Dell. While the youngest Bundren children tend to appear with their father quite often, they are less frequently featured in events where Addie is present. This needs to be taken with some caution. Undoubtedly, the two children are present around the coffin during the long voyage to Jefferson, but they do not receive narrative attention. Interestingly, Anse does not have a postive co-occurrence relationship with his two middle children Darl and Jewel, though the two are often found together.
+
+## Keywords
+
+Each event in *DY* has been encoded with a keyword. These keywords cover several broad areas:
+
++ Environments
++ Actions
++ Cultural Issues
++ Themes & Motifs
++ Relationships
++ Aesthetics
+
+Within these major categories there are second-order keywords and third-order keywords. As a result, the list of total possible keywords is quite extensive and ranged in the thousands of keywords. Needless to say, the editors strove to be as consistent as possible, but given the thousands of events and the thousands of events the data is far from perfect across the corpus. Nevertheless, all keywords were entered and re-entered by the editors for each individual text, and this process of peer-review assured that the keywording for each individual text was at least internally consistent. It is therefore best to avoid corpus-wide analysis of this data and be more consertative in attaching too much value to an evolving data set. 
+
+
+```{r all_keywords}
+
+all_keywords <- events %>%
+                pivot_longer(cols = starts_with("kw_"), names_to = "keywords", names_prefix = "kw_", values_to = "second_term") %>% 
+    separate_rows(second_term, sep=" \\| ") %>% 
+    mutate(third_term = str_extract(second_term, "(?<=\\> ).*")) %>% 
+    mutate(second_term = str_remove(second_term, "(?<= ).*")) %>% 
+    mutate(second_term = str_squish(second_term)) %>% 
+    mutate(single_term = ifelse(!is.na(second_term),second_term,keywords)) %>% 
+    mutate(single_term = ifelse(!is.na(third_term), third_term, single_term)) %>% 
+    mutate(root_term = paste(keywords, 
+        ifelse(!is.na(second_term), paste(" : ", second_term, sep=""),""),                            ifelse(!is.na(third_term), paste(" :: ",third_term, sep=""),""),                               sep = ""))
+
+
+```
+
+### Sound and the Fury
+
+#### Option 1: Coalesced Keywords
+
+Deciding which keyword to focus on can be tricky. As *DY* leaves it to the discretion of the editor to enter first, second, and third order keywords, by necessity first order keywords will surface more.
+
+```{r sf_keywords}
+
+sf_keywords_all <- all_keywords %>% 
+               filter(SourceTextCode=="SF") %>% 
+               count(single_term) %>% 
+                drop_na()
+
+```
+
+
+```{r sf_wordcloud}
+
+sf_wordcloud <- wordcloud2(sf_keywords_all, size = 1, minSize = 5, color='random-dark')
+sf_wordcloud
+```
+
+#### Option 2: Most detailed term keywords
+
+Meanwhile, focusing only on the most specific terms will actually overlook at lot of the partial data and reduce the relative difference between terms.
+
+```{r}
+sf_keywords_third <- all_keywords %>% 
+               filter(SourceTextCode=="SF") %>% 
+               count(third_term) %>% 
+                drop_na()
+```
+
+```{r}
+sf_wordcloud_third <- wordcloud2(sf_keywords_third, size = 1, minSize = 5, color='random-dark')
+sf_wordcloud_third
+
+```
+
+#### Option 3: Rooted Keyword
+
+A third option is to use the root term, which will lead to a very confusing diagram.
+
+```{r}
+sf_keywords_root <- all_keywords %>% 
+               filter(SourceTextCode=="SF") %>% 
+               count(root_term)
+```
+
+```{r}
+wordcloud2(sf_keywords_root, size = 1, minSize = 4, color='random-dark')
+```
+
+### As I Lay Dying
+
+```{r}
+AILD_keywords <- all_keywords %>% 
+               filter(SourceTextCode=="LD") %>% 
+               count(third_term) %>% 
+                drop_na()
+```
+
+
+```{r}
+wordcloud2(AILD_keywords, size = 1, minSize = 0, color='random-dark')
+```
+
+### Memphis as a space
+
+Because people wanted to know...the answer is kind of obvious!
+
+```{r}
+memphis <-  all_keywords %>% 
+            filter(str_detect(Location,"Memphis")) %>% 
+              count(single_term)
+
+wordcloud2(memphis, size = 1, minSize = 2, color='random-dark')
+
+```
+

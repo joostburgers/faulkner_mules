@@ -1,0 +1,246 @@
+---
+title: "Faulkner's Mules:"
+subtitle: "Some views of interests"
+author: "Johannes Burgers"
+date: "7/20/2022"
+output: html_document
+knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = file.path(dirname(inputFile), 'index.html')) })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning=FALSE, error=FALSE)
+```
+
+```{r}
+library(tidyverse, quietly=TRUE)
+library(ggthemes)
+library(rmdformats)
+library(cooccur)
+library(plotly)
+library(wordcloud)
+library(RColorBrewer)
+library(wordcloud2)
+```
+
+
+```{r preprocessing}
+characters <- read_csv("data/characters.csv")
+locations <- read_csv("data/locations.csv")
+events <- read_csv("data/events.csv")
+```
+
+```{r clean_character}
+
+characters_clean <- characters %>% 
+                   select(SourceTextTitle:Family,Biography,Nid:IndividualGroup
+                    ) %>% 
+                   rename(CharacterID = Nid)
+```
+
+```{r clean_locations}
+locations_clean <- locations %>% 
+                   select(SourceTextTitle:Description,`True X`:Region) %>% 
+                   rename_with(~gsub(" ", "_", .x, fixed = TRUE)) %>% 
+                   mutate(across(contains('_'),~as.numeric(gsub(" ", "", .)))) %>% 
+                   mutate(True_X = coalesce(True_X, Cemetery_X)) %>% 
+                   mutate(True_Y = coalesce(True_Y, Cemetery_Y)) %>% 
+                   select(!(Cemetery_X:Cemetery_Y)) %>% 
+                   rename(LocationCode = LocationKey)
+```
+
+
+```{r events_clean}
+
+events_clean <- events %>% 
+                select(!c(Body:y,Keywords)) %>% 
+                pivot_longer(c(CharactersPresent, CharactersMentioned), names_to = "PresentMentioned", values_to = "CharacterID") %>%                    
+  separate_rows(CharacterID, sep = ",") %>% 
+  mutate(CharacterID = as.numeric(str_trim(CharacterID))) %>% 
+  mutate(PresentMentioned = str_remove_all(PresentMentioned, "Characters")) %>% 
+  drop_na(CharacterID)
+  
+```
+
+```{r full_database}
+
+database_full <- events_clean %>% 
+                 left_join(characters_clean) %>% 
+                 left_join(locations_clean)  
+
+```
+
+
+
+
+## Introduction
+
+
+
+```{r lone_character}
+
+corpus_alone <- database_full %>% 
+                filter(PresentMentioned == "Present") %>%
+                filter(IndividualGroup == "Individual") %>% 
+                  group_by(Nid) %>% 
+                  add_count(Nid) %>% 
+                  filter(n == 1)
+
+corpus_alone_by_text <- database_full %>% 
+                filter(PresentMentioned == "Present") %>%
+                filter(IndividualGroup == "Individual") %>% 
+                  group_by(SourceTextCode) %>% 
+                  mutate(event_count = n_distinct(Nid)) %>% 
+                  add_count(Nid) %>% 
+                  filter(n == 1) %>% 
+                  mutate(percent = sum(n)/event_count) %>% 
+                  distinct(SourceTextTitle, percent)
+
+corpus_alone_by_text_max <- corpus_alone_by_text %>% 
+                            ungroup() %>% 
+                            slice_max(percent, n=1)
+corpus_alone_by_text_min <- corpus_alone_by_text %>% 
+                            ungroup() %>% 
+                            slice_min(percent, n=1)
+                                    
+                  
+
+corpus_alone_percent <- round(nrow(corpus_alone)/nrow(events)*100,0)
+                
+
+```
+
+```{r novel_lonely_percent}
+
+novel_lonely_percent <- corpus_alone_by_text %>% 
+                        filter(!str_detect(SourceTextTitle, '\\"')) %>% 
+                        mutate(marked = ifelse(str_detect(SourceTextTitle,"Sound|Dying"),TRUE,FALSE))
+
+mean_lonely <- mean(novel_lonely_percent$percent)
+
+```
+
+
+
+```{r}
+novel_lonely_percent %>% 
+  ggplot(aes( x=reorder(SourceTextTitle,percent), y=percent, fill=marked))+
+  geom_bar(stat = "identity")+
+  scale_y_continuous(labels = scales::percent_format(scale = 100))+
+  theme_clean()+
+  coord_flip()+
+   theme(legend.position="none")+
+  scale_fill_brewer(palette="Dark1")+
+    labs(title="Percentage of Events where Character Appears Alone by Novel", 
+         x="Novel", y = "Percent")
+```
+
+## Keywords
+
+Each event in *DY* has been encoded with a keyword. These keywords cover several broad areas:
+
++ Environments
++ Actions
++ Cultural Issues
++ Themes & Motifs
++ Relationships
++ Aesthetics
+
+Within these major categories there are second-order keywords and third-order keywords. As a result, the list of total possible keywords is quite extensive and ranged in the thousands of keywords. Needless to say, the editors strove to be as consistent as possible, but given the thousands of events and the thousands of events the data is far from perfect across the corpus. Nevertheless, all keywords were entered and re-entered by the editors for each individual text, and this process of peer-review assured that the keywording for each individual text was at least internally consistent. It is therefore best to avoid corpus-wide analysis of this data and be more consertative in attaching too much value to an evolving data set. 
+
+
+```{r all_keywords}
+
+all_keywords <- events %>%
+                pivot_longer(cols = starts_with("kw_"), names_to = "keywords", names_prefix = "kw_", values_to = "second_term") %>% 
+    separate_rows(second_term, sep=" \\| ") %>% 
+    mutate(third_term = str_extract(second_term, "(?<=\\> ).*")) %>% 
+    mutate(second_term = str_remove(second_term, "(?<= ).*")) %>% 
+    mutate(second_term = str_squish(second_term)) %>% 
+    mutate(single_term = ifelse(!is.na(second_term),second_term,keywords)) %>% 
+    mutate(single_term = ifelse(!is.na(third_term), third_term, single_term)) %>% 
+    mutate(root_term = paste(keywords, 
+        ifelse(!is.na(second_term), paste(" : ", second_term, sep=""),""),                            ifelse(!is.na(third_term), paste(" :: ",third_term, sep=""),""),                               sep = ""))
+
+
+```
+
+### Sound and the Fury
+
+#### Option 1: Coalesced Keywords
+
+Deciding which keyword to focus on can be tricky. As *DY* leaves it to the discretion of the editor to enter first, second, and third order keywords, by necessity first order keywords will surface more.
+
+```{r sf_keywords}
+
+sf_keywords_all <- all_keywords %>% 
+               filter(SourceTextCode=="SF") %>% 
+               count(single_term) %>% 
+                drop_na()
+
+```
+
+
+```{r sf_wordcloud}
+
+sf_wordcloud <- wordcloud2(sf_keywords_all, size = 1, minSize = 5, color='random-dark')
+sf_wordcloud
+```
+
+#### Option 2: Most detailed term keywords
+
+Meanwhile, focusing only on the most specific terms will actually overlook at lot of the partial data and reduce the relative difference between terms.
+
+```{r}
+sf_keywords_third <- all_keywords %>% 
+               filter(SourceTextCode=="SF") %>% 
+               count(third_term) %>% 
+                drop_na()
+```
+
+```{r}
+sf_wordcloud_third <- wordcloud2(sf_keywords_third, size = 1, minSize = 5, color='random-dark')
+sf_wordcloud_third
+
+```
+
+#### Option 3: Rooted Keyword
+
+A third option is to use the root term, which will lead to a very confusing diagram.
+
+```{r}
+sf_keywords_root <- all_keywords %>% 
+               filter(SourceTextCode=="SF") %>% 
+               count(root_term)
+```
+
+```{r}
+wordcloud2(sf_keywords_root, size = 1, minSize = 4, color='random-dark')
+```
+
+### As I Lay Dying
+
+```{r}
+AILD_keywords <- all_keywords %>% 
+               filter(SourceTextCode=="LD") %>% 
+               count(third_term) %>% 
+                drop_na()
+```
+
+
+```{r}
+wordcloud2(AILD_keywords, size = 1, minSize = 0, color='random-dark')
+```
+
+### Memphis as a space
+
+Because people wanted to know...the answer is kind of obvious!
+
+```{r}
+memphis <-  all_keywords %>% 
+            filter(str_detect(Location,"Memphis")) %>% 
+              count(single_term)
+
+wordcloud2(memphis, size = 1, minSize = 2, color='random-dark')
+
+```
+
