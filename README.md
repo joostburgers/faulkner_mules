@@ -1,2 +1,2 @@
-# faulkner_mules
-Some big data on Faulkner's most prolific energy source
+# Faulkner's Mules
+This site uses the keyword data in the *Digital Yoknapatawpha* database to analyze the frequency of mules in Faulkner's fiction. 
